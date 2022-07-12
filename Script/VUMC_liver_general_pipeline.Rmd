@@ -1,0 +1,156 @@
+---
+title: "VUMC_liver"
+author: "Yutian Zhao"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Always run this first 
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath("~/Desktop/VUMC_liver/"))
+```
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(xlsx)
+getwd()
+source("Resource/scFunctions.R")
+```
+
+
+## Input raw seurat object including all liver samples 
+```{r}
+liver_raw <- readRDS("~/Desktop/VUMC_liver/Raw_data/all_VLIVERsamples_seuratobject.rds")
+```
+
+## Modify some meta.data variables 
+```{r}
+
+## add column to include the number of genes detected per UMI: to give us an idea of the complexity of our dataset. 
+## will log10 transform the result for better comparison between samples 
+# add # of genes per UMI for each cell to meta.data
+liver_raw$log10GenesPerUMI <- log10(liver_raw$nFeature_RNA)/log10(liver_raw$nCount_RNA)
+
+# add "treatment" to meta.data
+liver_raw$treatment <- NA
+liver_raw$treatment[which(str_detect(liver_raw$condition, "C"))] <- "B"
+liver_raw$treatment[which(str_detect(liver_raw$condition, "E"))] <- "E"
+
+# modify "orig.ident" column in meta.data
+liver_raw$orig.ident <- NA
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-FC-1"))] <-"XX-B-liver-1"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-FC-2"))] <-"XX-B-liver-2"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-FC-3"))] <-"XX-B-liver-3"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-FE-1"))] <-"XX-E-liver-1"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-FE-2"))] <-"XX-E-liver-2"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-FE-3"))] <-"XX-E-liver-3"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-MC-1"))] <-"XY-B-liver-1"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-MC-2"))] <-"XY-B-liver-2"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-MC-3"))] <-"XY-B-liver-3"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-MC-4"))] <-"XY-B-liver-4"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-ME-1"))] <-"XY-E-liver-1"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-ME-2"))] <-"XY-E-liver-2"
+liver_raw$orig.ident[which(str_detect(liver_raw$sampleName, "XY-VLIVER-ME-3"))] <-"XY-E-liver-3"
+
+# modify "sampleName" to be the same as orig.ident 
+liver_raw$sampleName <- liver_raw$orig.ident
+
+# modify "condition" to "Condition" and to be the same classification as orig.ident 
+liver_raw$Condition <- NA
+liver_raw$Condition[which(str_detect(liver_raw$condition, "FC"))] <- "XXB"
+liver_raw$Condition[which(str_detect(liver_raw$condition, "FE"))] <- "XXE"
+liver_raw$Condition[which(str_detect(liver_raw$condition, "MC"))] <- "XYB"
+liver_raw$Condition[which(str_detect(liver_raw$condition, "ME"))] <- "XYE"
+
+# Create metadata dataframe. (In this way, we can continue insert additional metrics that we need for our QC analysis without the risk of affecting the Seurat object )
+metadata <- liver_raw@meta.data
+
+# Add cell IDs to metadata
+metadata$cells <- rownames(metadata)
+
+# Rename columns
+metadata <- metadata %>%
+  dplyr::rename(nUMI = nCount_RNA,
+                nGene = nFeature_RNA)
+metadata <- metadata[,-4]
+
+# Genes per UMI
+metadata$GenesPerUMI = metadata$nGene/metadata$nUMI
+
+# Add metadata back to Seurat object
+liver_raw@meta.data <- metadata
+
+saveRDS(liver_raw,"Raw_data/Liver_raw_metadata.modified.rds")
+
+head(liver_raw@meta.data)
+
+```
+## Check data quality 
+```{r}
+liver_raw = getCellQuality(seuratObject = liver_raw,
+                            feature_patterns = list("percent.mito"="^mt-",
+                                                    "percent.ribo"=c("^Rps","^Rpl"),
+                                                    "percent.pred"=c("^Gm1","^Gm2","^Gm3","^Gm4","^Gm5","^Gm6","^Gm7","^Gm8","^Gm9"),
+                                                    "percent.Hb"=c("^Hba-","^Hbb-","^Hbq")))
+
+cellQualityPlot(seuratObject = liver_raw,
+                fileName = "Plots/QCPlots/ViolinPlots/PreFilter/Liver.pdf",
+                featuresPlot = c("nGene","nUMI","percent.mito","GenesPerUMI"),
+                identPlot = "orig.ident",
+                H = 12, W = 20,
+                pointSize = 0)
+
+```
+
+# Obtain more summary statistics of the meta.data of raw seurat object 
+```{r}
+# Visualize the number of nucleus counts per sample 
+metadata %>%
+  ggplot(aes(x = sampleName, file = sampleName)) +
+  geom_bar() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ggtitle("nCells")
+ggsave(filename = "Plots/QCPlots/BarPlots/PreFilter/liver_raw_nucleuscounts.per.sample.png")
+
+# UMI counts (transcripts) per nucleus
+metadata %>%
+  ggplot(aes(color = sampleName, x = nUMI, fill = sampleName))+
+  geom_density(alpha = 0.2) +
+  scale_x_log10() +
+  theme_bw()+
+  ylab("log10(Nucleus density)") +
+  geom_vline(xintercept = 500)
+ggsave(filename = "Plots/QCPlots/DensityPlots/PreFilter/liver_raw_UMIcounts.per.nucleus.png")
+
+# genes detected per nucleus
+metadata %>%
+  ggplot(aes(color = sampleName, x = nGene, fill = sampleName)) +
+  geom_density(alpha = 0.2) +
+  scale_x_log10() +
+  theme_bw()+
+  ylab("log10(Nucleus density)") +
+  geom_vline(xintercept = 300)
+ggsave(filename = "Plots/QCPlots/DensityPlots/PreFilter/liver_raw_Genecounts.per.nucleus.png")
+
+metadata %>%
+  ggplot(aes(x = sampleName, y = log10(nGene), fill = sampleName))+
+  geom_boxplot()+
+  theme_bw()+
+  ylab("log10(nGene)") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  ggtitle("nGenes per nucleus")
+ggsave(filename = "Plots/QCPlots/BoxPlot/PreFilter/liver_raw_Genecounts.per.nucleus.png")
+
+```
+
+## Filter cells based on some hard cutoffs 
+```{r}
+
+```
+
