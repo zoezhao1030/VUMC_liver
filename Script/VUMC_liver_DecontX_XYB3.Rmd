@@ -1,0 +1,452 @@
+---
+title: "VUMC_liver_DecontX"
+author: "Yutian Zhao"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "png")
+knitr::opts_knit$set(root.dir = normalizePath("~/Desktop/VUMC_liver/"))
+```
+
+```{r load, eval = TRUE, message=FALSE}
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(xlsx)
+library(SingleCellExperiment)
+library(celda)
+library(singleCellTK)
+source("Resource/scFunctions.R")
+```
+
+#### Try decontX for individual sample (XYB3 as a testing sample here)
+
+### Importing data and create a SingleCellExperiment object
+
+## DecontX can take either a [SingleCellExperiment](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) object or a counts matrix as input. `decontX` will attempt to convert any input matrix to class `dgCMatrix` from package [Matrix](https://cran.r-project.org/web/packages/Matrix/index.html) before starting the analysis.
+
+## To import datasets directly into an SCE object, the [singleCellTK](https://bioconductor.org/packages/release/bioc/html/singleCellTK.html) package has several importing functions for different preprocessing tools including CellRanger, STARsolo, BUStools, Optimus, DropEST, SEQC, and Alevin/Salmon. For example, the following code can be used as a template to read in the filtered and raw matrices for multiple samples processed with CellRanger:
+
+```{r sce_import, eval = FALSE}
+### sample 4137-2
+## Working with Seurat 
+getwd()
+
+# Read counts from CellRanger output
+counts_XYB3 <- Read10X("Raw_data/CellRanger_outs/XYB3/outs/filtered_feature_bc_matrix/")
+counts_XYB3.raw <- Read10X("Raw_data/CellRanger_outs/XYB3/outs/raw_feature_bc_matrix/") # imported and used as the background
+
+# Create a SingleCellExperiment object
+sce_XYB3 <- SingleCellExperiment(list(counts = counts_XYB3))
+sce_XYB3.raw <- SingleCellExperiment(list(counts = counts_XYB3.raw))
+
+```
+
+### Running DecontX (use raw matrix as background)
+
+## The raw/droplet matrix can be used to empirically estimate the distribution of ambient RNA, which is especially useful when cells that contributed to the ambient RNA are not accurately represented in the filtered count matrix containing the cells. For example, cells that were removed via flow cytometry or that were more sensitive to lysis during dissociation may have contributed to the ambient RNA but were not measured in the filtered/cell matrix. The raw/droplet matrix can be input as an SCE object or a sparse matrix using the `background` parameter:
+
+```{r decontX_background, eval=FALSE, message=FALSE}
+
+sce_XYB3 <- decontX(sce_XYB3, background = sce_XYB3.raw)
+
+# The contamination can be found in 
+head(sce_XYB3$decontX_contamination)
+
+# The decontaminated counts can be accessed with 
+head(decontXcounts(sce_XYB3))
+getwd()
+saveRDS(sce_XYB3,"Intermediate_data/RData/DecontX/sce_XYB3_deconted_bkgd.raw.rds")
+```
+
+### Plotting DecontX results 
+
+## Cluster labels on UMAP
+
+# DecontX creates a UMAP which we can use to plot the cluster labels automatically identified in the analysis. Note that the clustering approach used here is designed to find "broad" cell types rather than individual cell subpopulations within a cell type. 
+
+```{r UMAP_Clusters}
+umap_XYB3 <- reducedDim(sce_XYB3, "decontX_UMAP")
+png("Plots/DecontX_results/Auto_UMAP/XYB3.png")
+plotDimReduceCluster(x = sce_XYB3$decontX_clusters, 
+                     dim1 = umap_XYB3[,1],
+                     dim2 = umap_XYB3[,2])
+dev.off()
+```
+
+## Contamination on UMAP
+
+# The percentage of contamination in EACH cell can be plotting on the UMAP to visualize what clusters may have higher levels of ambient RNA
+
+```{r plot_decon}
+png("Plots/DecontX_results/Plot_contamination/XYB3.png")
+plotDecontXContamination(sce_XYB3)
+dev.off()
+```
+
+### Create Seurat Object for XYB3 sample 
+```{r}
+XYB3 <- CreateSeuratObject(counts = counts_XYB3, # 10X data from filtered_feature_bc_matrix
+                           project = "Liver-XY-B-3")
+XYB3$genotype <- "XYB"
+XYB3$treatment <- "B"
+XYB3$replicate <- "3"
+XYB3$sampleName <- "XYB3"
+```
+
+## Check decontaminated data quality of XYB3 (from decontX_with_background)
+```{r}
+# # option 1: add decontaminated matrix of decontX to seurat object (will have two assays, one is "RNA", one is "decontXcounts")
+# XYB3[["decontXcounts"]] <- CreateAssayObject(counts = round(decontXcounts(sce_XYB3)))
+
+XYB3 = getCellQuality(seuratObject = XYB3,
+                      feature_patterns = list("percent.mito"="^mt-",
+                                                    "percent.ribo"=c("^Rps","^Rpl"),
+                                                    "percent.pred"=c("^Gm1","^Gm2","^Gm3","^Gm4","^Gm5","^Gm6","^Gm7","^Gm8","^Gm9"),
+                                                    "percent.Hb"=c("^Hba-","^Hbb-","^Hbq")))
+cellQualityPlot(seuratObject = XYB3,
+                fileName = "Plots/QCPlots/ViolinPlots/PreFilter/XYB3_nodecontX.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+
+
+# option 2: directly create a new seurat object (XYB3_decontXonly) from the decontX results.(will only have one assay, "RNA"here represents "decontXcounts" restults)
+XYB3_decontXonly <- CreateSeuratObject(round(decontXcounts(sce_XYB3)))
+
+XYB3_decontXonly = getCellQuality(seuratObject = XYB3_decontXonly,
+                                  feature_patterns = list("percent.mito"="^mt-",
+                                                    "percent.ribo"=c("^Rps","^Rpl"),
+                                                    "percent.pred"=c("^Gm1","^Gm2","^Gm3","^Gm4","^Gm5","^Gm6","^Gm7","^Gm8","^Gm9"),
+                                                    "percent.Hb"=c("^Hba-","^Hbb-","^Hbq")))
+cellQualityPlot(seuratObject = XYB3_decontXonly,
+                fileName = "Plots/QCPlots/ViolinPlots/PreFilter_DecontX/XYB3_DecontX_only.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+
+##### The results from SCE (background cells used) were not good. Lots of cells has no nFeatures_RNA and nCount_RNA. 
+```
+
+### Try using filtered cells data only for decontX, no raw data for background cells 
+
+```{r}
+XYB3_nobackground <- decontX(sce_XYB3) # sce_XYB3 is the SCE object of count matrix from filtered cell data only. 
+saveRDS(XYB3_nobackground,"Intermediate_data/RData/DecontX/sce_XYB3_deconted_NoBkgd.rds")
+
+XYB3_nobackground_seurat <- CreateSeuratObject(round(decontXcounts(XYB3_nobackground)))
+XYB3_nobackground_seurat <- getCellQuality(XYB3_nobackground_seurat,
+                                           feature_patterns = list("percent.mito"="^mt-",
+                                                    "percent.ribo"=c("^Rps","^Rpl"),
+                                                    "percent.pred"=c("^Gm1","^Gm2","^Gm3","^Gm4","^Gm5","^Gm6","^Gm7","^Gm8","^Gm9"),
+                                                    "percent.Hb"=c("^Hba-","^Hbb-","^Hbq")))
+cellQualityPlot(seuratObject = XYB3_nobackground_seurat,
+                fileName = "Plots/QCPlots/ViolinPlots/PreFilter_DecontX/XYB3_DecontXONLY_NoBkgd.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+```
+
+### Try using filtered raw matrix (use cells that are not in the filtered matrix while having nUMI/cell > 50) as real backgroud. 
+```{r}
+XYB3_filtered.cells <- rownames(XYB3@meta.data) # all cells (32516) in filtered matrix 
+cat(sum(counts_XYB3.raw@Dimnames[[2]] %in% XYB3_filtered.cells), "\n")
+counts_XYB3.raw_nonoverlap <- counts_XYB3.raw[,!(counts_XYB3.raw@Dimnames[[2]] %in% XYB3_filtered.cells)] # get cells that are only in raw matrix but not in filtered matrix (dgCMatirx)
+counts_XYB3.raw_nonoverlap_seurat <- CreateSeuratObject(counts = counts_XYB3.raw_nonoverlap, projet = "XYB3_RawMatirx_nonoverlapCells")
+counts_XYB3.raw_nonoverlap_seurat <- subset(counts_XYB3.raw_nonoverlap_seurat, subset = nCount_RNA > 50)
+sce_XYB3_background_UMI50 <- SingleCellExperiment(assays = list(counts = counts_XYB3.raw_nonoverlap_seurat@assays$RNA@counts),
+                                                  colData = counts_XYB3.raw_nonoverlap_seurat@meta.data)
+sce_XYB3_decont_bkgdUMI50 <- decontX(x = sce_XYB3, background = sce_XYB3_background_UMI50)
+
+saveRDS(sce_XYB3_decont_bkgdUMI50, "Intermediate_data/RData/DecontX/sce_XYB3_deconted_bkgd.UMI50.rds")
+
+# convert sce_XYB3_decont_bkgdUMI50 to seurat object
+seruat_XYB3_decont_bkgdUMI50 <- CreateSeuratObject(round(decontXcounts(sce_XYB3_decont_bkgdUMI50)))
+seruat_XYB3_decont_bkgdUMI50 <- getCellQuality(seruat_XYB3_decont_bkgdUMI50,
+                                               feature_patterns = list("percent.mito"="^mt-",
+                                                    "percent.ribo"=c("^Rps","^Rpl"),
+                                                    "percent.pred"=c("^Gm1","^Gm2","^Gm3","^Gm4","^Gm5","^Gm6","^Gm7","^Gm8","^Gm9"),
+                                                    "percent.Hb"=c("^Hba-","^Hbb-","^Hbq")))
+cellQualityPlot(seuratObject = seruat_XYB3_decont_bkgdUMI50,
+                fileName = "Plots/QCPlots/ViolinPlots/PreFilter_DecontX/XYB3_DecontXONLY_bkgdUMI50.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+```
+
+#### Try do clustering for XYB seurat object (with no decontX)
+```{r}
+counts_XYB3_expr.matrix <- Read10X("Raw_data/CellRanger_outs/XYB3/outs/filtered_feature_bc_matrix/")
+Seurat_XYB3 <- CreateSeuratObject(counts = counts_XYB3_expr.matrix) # 32285 genes x 32516 droplets in unfiltered seurat object 
+
+Seurat_XYB3 = getCellQuality(seuratObject = Seurat_XYB3,
+                             feature_patterns = list("percent.mito"="^mt-",
+                                                    "percent.ribo"=c("^Rps","^Rpl"),
+                                                    "percent.pred"=c("^Gm1","^Gm2","^Gm3","^Gm4","^Gm5","^Gm6","^Gm7","^Gm8","^Gm9"),
+                                                    "percent.Hb"=c("^Hba-","^Hbb-","^Hbq")))
+cellQualityPlot(seuratObject = Seurat_XYB3,
+                fileName = "Plots/QCPlots/ViolinPlots/PreFilter/XYB3_raw.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+
+### filter XYB3 nuclei with cutoffs
+
+Seurat_filtered_XYB3 = subset(Seurat_XYB3,
+                              subset = nFeature_RNA > 200 & nFeature_RNA < 2000 & 
+                                nCount_RNA > 500 & nCount_RNA < 4000 & 
+                                percent.mito < 0.2) # threshold for mito% might be too loose? 
+cellQualityPlot(seuratObject = Seurat_filtered_XYB3,
+                fileName = "Plots/QCPlots/ViolinPlots/PostFilter/XYB3_gene.200.2000_umi.500.4000_mito.0.2.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+## 29315 droplets left - still too high, aimed for 10k droplets, will try more stringent cutoffs
+
+
+Seurat_filtered_XYB3 = subset(Seurat_XYB3,
+                              subset = nFeature_RNA > 200 & nFeature_RNA < 2000 & 
+                                nCount_RNA > 500 & nCount_RNA < 2000 & 
+                                percent.mito < 0.15)
+cellQualityPlot(seuratObject = Seurat_filtered_XYB3,
+                fileName = "Plots/QCPlots/ViolinPlots/PostFilter/XYB3_gene.200.2000_umi.500.2000_mito.0.15.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+## 16732 droplets left - try one more stingent cutoff 
+
+
+Seurat_filtered_XYB3 = subset(Seurat_XYB3,
+                              subset = nFeature_RNA > 200 & nFeature_RNA < 2000 & 
+                                nCount_RNA > 500 & nCount_RNA < 2000 & 
+                                percent.mito < 0.1)
+cellQualityPlot(seuratObject = Seurat_filtered_XYB3,
+                fileName = "Plots/QCPlots/ViolinPlots/PostFilter/XYB3_gene.200.2000_umi.500.2000_mito.0.1.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+## only 3016 droplets left. try less stringent cutoff
+
+Seurat_filtered_XYB3 = subset(Seurat_XYB3,
+                              subset = nFeature_RNA > 200 & nFeature_RNA < 2000 & 
+                                nCount_RNA > 500 & nCount_RNA < 3000 & 
+                                percent.mito < 0.12)
+cellQualityPlot(seuratObject = Seurat_filtered_XYB3,
+                fileName = "Plots/QCPlots/ViolinPlots/PostFilter/XYB3_gene.200.2000_umi.500.3000_mito.0.12.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+## 9937 droplets left. Will use this filtered seurat object for downstream for now. 
+
+
+
+### Clustering and dimensionality reduction
+
+Idents(Seurat_filtered_XYB3) <- "XY-B-3"
+Seurat_filtered_XYB3 <- processSeurat(seuratObject = Seurat_filtered_XYB3,
+                                      name = "XYB3",
+                                      plot_meta = "orig.ident")
+grep("^RNA",colnames(Seurat_filtered_XYB3@meta.data), value = TRUE)
+
+saveRDS(Seurat_filtered_XYB3, "Intermediate_data/RData/No_DecontX/XYB_gene.200.2000_umi.500.3000_mito.0.12_clustered.rds")
+
+rna_pca_red <- Seurat_filtered_XYB3@reductions$pca
+rna_umap_red <- Seurat_filtered_XYB3@reductions$umap
+rna_tsne_red <- Seurat_filtered_XYB3@reductions$tsne
+
+Seurat_filtered_XYB3 <- ClusterAnalysis(seuratObject = Seurat_filtered_XYB3,
+                                        condition = "orig.ident",
+                                        show_clusters = "RNA_snn_res.0.5",
+                                        name = "XY-B-3",
+                                        sample_proportion_plot_width = 10)
+XY3_res.0.5_markers <- Seurat_filtered_XYB3@misc$markers
+XY3_cluster_predictions <- markerGeneOverlap(query_markers = XY3_res.0.5_markers,
+                                             reference_markers = "Resource/Liver_ref_markers_2_GM.human.txt",
+                                             overlap_plot_wid = 8,
+                                             overlap_plot_hgt = 5)
+
+XY3_cluster_predictions$predictions
+
+# Cluster 4 Stellate 
+# Cluster 5 Myeloid cell (Myel-1)
+# Cluster 8 cholangiocytes
+# Cluster 9 Hepatocytes (Hep3)
+# Cluster 11 T 
+
+predictions <- XY3_cluster_predictions$predictions
+XYB3_new.cluster.ids <- c("Hepatocyte","Hepatocyte","Myeloid Cell","T Cell","Hepatocyte","Hepatocyte","Stellate Cell","Myeloid Cell","Hepatocyte","Endothelial Cell","Cholangiocyte","Hepatocyte")
+names(XYB3_new.cluster.ids) <- levels(Seurat_filtered_XYB3)
+Seurat_filtered_XYB3 <- RenameIdents(Seurat_filtered_XYB3,XYB3_new.cluster.ids)
+
+png("Intermediate_data/XYB3_testing/XYB3_Figures/XYB3_annotated.png", width = 900, height = 900, units = "px", res = 120)
+DimPlot(Seurat_filtered_XYB3, reduction = "umap", label = TRUE )
+dev.off()
+
+saveRDS(Seurat_filtered_XYB3,"Intermediate_data/RData/No_DecontX/XYB_gene.200.2000_umi.500.3000_mito.0.12_clustered_annotated.rds")
+```
+
+
+#### Now have clustering info. Try input clustering info into DecontX. 
+
+### NO background input for DecontX
+```{r}
+counts_XYB3_expr.matrix <- Read10X("Raw_data/CellRanger_outs/XYB3/outs/filtered_feature_bc_matrix/")
+sce <- SingleCellExperiment(list(counts = counts_XYB3_expr.matrix))
+sce <- decontX(sce, z = c("Hepatocyte","Myeloid Cell","T Cell","Stellate Cell","Endothelial Cell","Cholangiocyte"))
+# sce <- decontX(sce)
+saveRDS(sce,"Intermediate_data/XYB3_testing/RData/DecontX/sce_XYB3_DecontXed_NoBkgd.Clustered.rds")
+
+
+## Import decontX output sce object into (unfiltered) Seurat object 
+
+Seurat_XYB3 <- CreateSeuratObject(counts = counts_XYB3_expr.matrix) # 32285 genes x 32516 droplets in unfiltered seurat object 
+Seurat_XYB3[["decontXcounts"]] <- CreateAssayObject(counts = decontXcounts(sce)) # Now the raw XYB3 Seurat object contains decontX results. 
+DefaultAssay(Seurat_XYB3) <- "decontXcounts"
+
+## Get cell quality
+Seurat_XYB3 = getCellQuality(seuratObject = Seurat_XYB3,
+                             feature_patterns = list("percent.mito"="^mt-",
+                                                      "percent.ribo"=c("^Rps","^Rpl"), "percent.pred"=c("^Gm1","^Gm2","^Gm3","^Gm4","^Gm5","^Gm6","^Gm7","^Gm8","^Gm9"),
+                                                    "percent.Hb"=c("^Hba-","^Hbb-","^Hbq")))
+cellQualityPlot(seuratObject = Seurat_XYB3,
+                              fileName = "Intermediate_data/XYB3_testing/XYB3_Figures/PreQC_ViolinPlot/XYB3_DecontX_NoBkgd_clustered.pdf",
+                              featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                              identPlot = "orig.ident",
+                              H=9, W = 20,
+                              pointSize = 0)
+
+# DecontX with cluster info but no background cells yields the best results. (cells now have lowered mitochondrial UMI%)
+```
+
+```{r}
+## Plotting DecontX results 
+
+# Cluster labels on UMAP
+umap_XYB3 <- reducedDim(sce, "decontX_UMAP")
+plotDimReduceCluster(x = sce$decontX_clusters,
+                     dim1 = umap_XYB3[,1],
+                     dim2 = umap_XYB3[,2])
+```
+
+
+```{r}
+# Contamination on UMAP
+plotDecontXContamination(sce)
+```
+## QC the cells in the DecontXed seurat object 
+```{r}
+Seurat_filtered_XYB3 = subset(Seurat_XYB3,
+                              subset = nFeature_RNA > 200 & nFeature_RNA < 2000 & 
+                                nCount_RNA > 500 & nCount_RNA < 3000 & 
+                                percent.mito < 0.10)
+# 9915 cells left after QC
+cellQualityPlot(seuratObject = Seurat_filtered_XYB3,
+                fileName = "Intermediate_data/XYB3_testing/XYB3_Figures/PostQC_ViolinPlot/Deconted_XYB3_gene.200.2000_umi.500.3000_mito.0.10.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito"),
+                identPlot = "orig.ident",
+                H=9, W = 20,
+                pointSize = 0)
+# Plot hepatocyte marker expression before and after decontX
+png("Intermediate_data/XYB3_testing/XYB3_Figures/PostQC_ViolinPlot/Alb-expr-DecontXvsRaw.png")
+p2 <- VlnPlot(Seurat_filtered_XYB3, features = "Alb") + labs(title = "Alb_Expr_AfterDecontX") # deconted hepatrocyte marker gene expression
+p1 <- VlnPlot(Seurat_filtered_XYB3,features = "Alb",assay = "RNA") + labs(title = "Alb_Expr_BeforeDecontX") # hepatrocyte marker gene expression before decontX
+p1 + p2 
+dev.off()
+
+# Plot mitochondria marker expression before and after decontX
+png("Intermediate_data/XYB3_testing/XYB3_Figures/PostQC_ViolinPlot/mt-Atp6-expr-DecontXvsRaw.png")
+p2 <- VlnPlot(Seurat_filtered_XYB3, features = "mt-Atp6")+ labs(title = "mt-Apt6_Expr_AfterDecontX") # deconted mitochondria marker gene expression
+p1 <- VlnPlot(Seurat_filtered_XYB3, features = "mt-Atp6", assay= "RNA") + labs(title = "mt-Atp6_Expr_BeforeDecontX")
+p1 + p2
+dev.off()
+```
+
+## Clustering and dimensionality reduction
+```{r}
+Seurat_filtered_XYB3 <- processSeurat(seuratObject = Seurat_filtered_XYB3,
+                                      name = "XYB3_decontX.w.clusterINFO",
+                                      plot_meta = "orig.ident")
+DefaultAssay(Seurat_filtered_XYB3,)
+grep("^RNA", colnames(Seurat_filtered_XYB3@meta.data), value = TRUE)
+saveRDS(Seurat_filtered_XYB3,"Intermediate_data/XYB3_testing/RData/DecontX/seurat_filtered_XYB3_deconted.w.clusterinfo_QCed_clusterd.rds")
+```
+
+## Marker identification
+```{r}
+rna_pca_red <- Seurat_filtered_XYB3@reductions$pca
+rna_umap_red <- Seurat_filtered_XYB3@reductions$umap
+rna_tsne_red <- Seurat_filtered_XYB3@reductions$tsne
+
+Seurat_filtered_XYB3 <- ClusterAnalysis(seuratObject = Seurat_filtered_XYB3,
+                                        condition = "orig.ident",
+                                        sample_colors = NULL,
+                                        show_clusters = "decontXcounts_snn_res.0.5",
+                                        name = "XYB3_decontX.w.clusterINFO",
+                                        sample_proportion_plot_width = 10)
+
+saveRDS(Seurat_filtered_XYB3,"Intermediate_data/XYB3_testing/RData/DecontX/seurat_filtered_XYB3_deconted.w.clusterinfo_QCed_clusterd_MarkerIDed.rds")
+```
+
+## Cell type annotation
+```{r}
+Seurat_filtered_XYB3 <- readRDS("Intermediate_data/XYB3_testing/RData/DecontX/seurat_filtered_XYB3_deconted.w.clusterinfo_QCed_clusterd_MarkerIDed.rds")
+decontX_res.0.5_markers <- Seurat_filtered_XYB3@misc$markers[Seurat_filtered_XYB3@misc$markers$res == "decontXcounts_snn_res.0.5",]
+cluster_predictions <- markerGeneOverlap(query_markers = decontX_res.0.5_markers,
+                                         reference_markers = "Resource/Liver_ref_markers_2_GM.human.txt",
+                                         overlap_plot_hgt = 5,
+                                         overlap_plot_wid = 8)
+cluster_predictions$predictions
+new.cluster.ids <- c("Hepatocyate","Hepatocyate", "Hepatocyate","Hepatocyate","Stellate Cell","Hepatocyate","Myeloid Cell","Endothelial Cell","Cholangiocyte","Endothelial Cell","T Cell")
+names(new.cluster.ids) <- levels(Seurat_filtered_XYB3)
+Seurat_filtered_XYB3 <- RenameIdents(Seurat_filtered_XYB3, new.cluster.ids)
+Seurat_filtered_XYB3$Cell_type <- Seurat_filtered_XYB3@active.ident
+
+png("Intermediate_data/XYB3_testing/XYB3_Figures/XYB3_decontX_annotated.png", width = 900, height = 900, units = "px", res = 120)
+DimPlot(Seurat_filtered_XYB3,reduction = "umap", label = TRUE)
+dev.off()
+```
+
+## Try another annotation (marker_list_3 from Panglaodb)
+```{r}
+Seurat_filtered_XYB3 <- readRDS("Intermediate_data/XYB3_testing/RData/DecontX/seurat_filtered_XYB3_deconted.w.clusterinfo_QCed_clusterd_MarkerIDed.rds")
+decontX_res.0.5_markers <- Seurat_filtered_XYB3@misc$markers[Seurat_filtered_XYB3@misc$markers$res == "decontXcounts_snn_res.0.5",]
+cluster_predictions <- markerGeneOverlap(query_markers = decontX_res.0.5_markers,
+                                         reference_markers = "Resource/Liver_ref_markers_3_Panglaodb.txt",
+                                         overlap_plot_hgt = 5,
+                                         overlap_plot_wid = 8)
+View(cluster_predictions$predictions)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
