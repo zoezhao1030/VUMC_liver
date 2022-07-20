@@ -1,0 +1,7 @@
+
+*.rds
+*.Rproj.user
+*.Rhistory
+*.png
+*.DS_Store
+*.pdf
