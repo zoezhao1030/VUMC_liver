@@ -5,3 +5,6 @@
 *.png
 *.DS_Store
 *.pdf
+.Rproj.user
+.RData
+*.gz

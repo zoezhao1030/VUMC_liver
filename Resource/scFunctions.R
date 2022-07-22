@@ -5740,7 +5740,7 @@ cellQualityPlot <- function(seuratObject=dropEST.combined,fileName=NULL,H=9,W=40
   #Generate QCPlots
   seuratObject = SetIdent(seuratObject, value = identPlot)
   pdf(file=fileName,height=H,width=W)
-  print(VlnPlot(object = seuratObject, features = featuresPlot ,pt.size = pointSize, ncol = 5))
+  print(VlnPlot(object = seuratObject, features = featuresPlot ,pt.size = pointSize, ncol = 3))
   dev.off()
 }
 

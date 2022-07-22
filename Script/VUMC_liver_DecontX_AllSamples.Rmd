@@ -1,0 +1,124 @@
+---
+title: "VUMC_liver_DecontX_AllSamples"
+author: "Yutian Zhao"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath("~/Desktop/VUMC_liver/"))
+```
+
+```{r load, eval = TRUE, message=FALSE}
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(xlsx)
+library(SingleCellExperiment)
+library(celda)
+library(singleCellTK)
+source("Resource/scFunctions.R")
+```
+
+###### Do DecontX on each sample using for loop 
+```{r}
+samples <- list.dirs("./Raw_data/CellRanger_outs/", full.names = FALSE)[-1]
+samples <- samples[seq(1,26,by = 2)]
+samples_filtered.fbc.matrix <- paste0(samples[1:13],"_filtered.fbc.matrix")
+filtered.fbc.matrices <- list()
+
+## put filtered matrix for each sample into a list of dgCMatrix (filtered.fbc.matrices)
+for (i in 1:13){
+  dgCMtrix <- assign(samples_filtered.fbc.matrix[i],Read10X(paste0("Raw_data/CellRanger_outs/",samples[i],"/filtered_feature_bc_matrix"))) # assign() assigns values to a variable name. Therefore, might not need to further assign this variable to 'dgCMatrix'.  
+  filtered.fbc.matrices[[i]] <- dgCMtrix
+}
+
+# Rename each variable in the dgCMatrix list with sample name
+names(filtered.fbc.matrices) <- samples_filtered.fbc.matrix
+saveRDS(filtered.fbc.matrices,"Intermediate_data/RData/filtered.fbc.matrices.rds")
+
+## convert list of dgcMatrix into list of sce objects
+sce_samples <- paste0("sce_", samples[1:13])
+sce_objects <- list()
+for (i in 1:13){
+  sce_object <- assign(sce_samples[i], SingleCellExperiment(list(counts = filtered.fbc.matrices[[i]])))
+  sce_objects[[i]] <- sce_object
+}
+# Rename each variable in the sce list with sample name 
+names(sce_objects) <- sce_samples
+saveRDS(sce_objects, "Intermediate_data/RData/sce_objects.rds")
+
+## Start DecontX
+for (i in 1:13){
+  sce_objects[[i]] <- decontX(sce_objects[[i]], z = c("Hepatocytes","Hepatoblasts","Kupffer cells","Hepatic stellate cells","Cholangiocytes")) # this is the clustering info of liver from Panglaodb
+}
+saveRDS(sce_objects,"Intermediate_data/RData/decontXed_sce_objects.rds")
+```
+
+##### First create original combined Seurat object
+```{r}
+samples_fbc.matrix_Names <- list.dirs("./Raw_data/CellRanger_filtered.fbc.matrix/", full.names = FALSE)[-1]
+samples_fbc.matrix_Names  = samples_fbc.matrix_Names[samples_fbc.matrix_Names!=""]
+setwd("~/Desktop/VUMC_liver/Raw_data/CellRanger_filtered.fbc.matrix/")
+original_seuratObject <- CreateSeuratObjectFrom10X(sample_dirs = samples_fbc.matrix_Names,
+                                           meta_data = c("genotype","treatment","replicate"))
+table(original_seuratObject$orig.ident)
+saveRDS(original_seuratObject,"Raw_data/Original_SeuratObject_AllSamples.rds")
+
+# check data quality 
+original_seuratObject = getCellQuality(seuratObject = original_seuratObject,
+                                       feature_patterns = list("percent.mito"="^mt-",
+                                                                "percent.ribo"=c("^Rps","^Rpl"),
+                                                                "percent.pred"=c("^Gm1","^Gm2","^Gm3","^Gm4","^Gm5","^Gm6","^Gm7","^Gm8","^Gm9"),
+                                                                "percent.Hb"=c("^Hba-","^Hbb-","^Hbq")))
+
+cellQualityPlot(seuratObject = original_seuratObject,
+                fileName = "Plots/QCPlots/ViolinPlots/PreFilter/Original_SeuratObject_preQC.pdf",
+                featuresPlot = c("nFeature_RNA","nCount_RNA","percent.mito",
+                                 "percent.ribo","percent.pred","percent.Hb"),
+                identPlot = "orig.ident",
+                H = 9, 
+                W = 20, 
+                pointSize = 0
+                )
+```
+
+#### Add decontX results to the seurat object of each sample
+```{r}
+SeuratObject_samples <- paste0("SeuratObject_", samples[1:13])
+SeuratObject_sample_list <- list()
+
+# Create Seuart Object for individual sample, add deconted results into each sample seurat object. Then combine all seurat objects (with decontX results) into a list
+for (i in 1:13){
+  SeuratObject_sample <- CreateSeuratObject(filtered.fbc.matrices[[i]])
+  sce_object <- sce_objects[[i]]
+  SeuratObject_sample[["decontXcounts"]] <- CreateAssayObject(counts = decontXcounts(sce_object))
+  DefaultAssay(SeuratObject_sample) <- "decontXcounts" # Set active.assay to decontXcounts
+  Idents(SeuratObject_sample) <- samples[i] # Set active.ident to individual sample name
+  SeuratObject_sample_list[[i]] <- SeuratObject_sample
+  names(SeuratObject_sample_list)[i] <- samples[i] # rename the name of the variables in the seurat object list
+}
+
+saveRDS(SeuratObject_sample_list,"Intermediate_data/RData/decontXed_Seurat_Objects.rds")
+
+DecontXed_seuratObject <- merge(x = SeuratObject_sample_list[[1]], 
+                                y = c(SeuratObject_sample_list[[2]],
+                                      SeuratObject_sample_list[[3]],
+                                      SeuratObject_sample_list[[4]],
+                                      SeuratObject_sample_list[[5]],
+                                      SeuratObject_sample_list[[6]],
+                                      SeuratObject_sample_list[[7]],
+                                      SeuratObject_sample_list[[8]],
+                                      SeuratObject_sample_list[[9]],
+                                      SeuratObject_sample_list[[10]],
+                                      SeuratObject_sample_list[[11]],
+                                      SeuratObject_sample_list[[12]],
+                                      SeuratObject_sample_list[[13]]),
+                                add.cell.ids = samples,
+                                project = "VUMC_Liver_DecontXed")
+saveRDS(DecontXed_seuratObject, "Intermediate_data/RData/DecontXed_SeuratObject_AllSamples.rds")
+
+```
+
